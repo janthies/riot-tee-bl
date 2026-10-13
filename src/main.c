@@ -30,17 +30,30 @@
 /* KMU key slot used for the device root key (4 x 32-bit = 128 bits) */
 #define ROOT_KEY_SLOT 0
 
-/* OTP index for storing the riot-tee firmware hash (8 words = 256 bits).
-   Uses OTP[0..7] in the UICR OTP region (freely readable, write-once). */
-#define FW_HASH_OTP_BASE 0
+/* UICR OTP words (freely readable, write-once). The riot-tee firmware hash
+   uses OTP[0..7]. OTP[8] marks a completed provisioning and is written last. */
+#define FW_HASH_OTP_BASE    0
+#define FW_HASH_WORDS       8
+#define PROVISIONED_OTP     8
+#define PROVISIONED_MAGIC   0x52544231  /* "RTB1" */
+#define ERASED              0xFFFFFFFF
 
 /* Number of bootloader flash regions to lock */
 #define BL_REGION_COUNT (BL_FLASH_SIZE / 0x8000)
+
+typedef enum {
+    UNPROVISIONED,  /* everything provisioning writes is still erased */
+    PROVISIONED,    /* the marker is set, provisioning completed */
+    INCONSISTENT,   /* provisioning was cut off, e.g. by a power loss */
+} provisioning_state_t;
 
 /* ---- Forward declarations ---- */
 static void cc_enable(void);
 static void cc_disable(void);
 static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8]);
+static provisioning_state_t provisioning_state(void);
+static void provision(const uint32_t fw_hash[FW_HASH_WORDS]);
+static int hash_matches_otp(const uint32_t fw_hash[FW_HASH_WORDS]);
 static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr);
 static int kmu_push_kdr_and_lock(int slot);
 static void wipe(void *buf, size_t len);
@@ -51,8 +64,6 @@ static void halt(void);
 
 int main(void)
 {
-    /* ==== R1: Provision device-unique root key ==== */
-
 #ifdef BL_TIMING_PIN
     nrf_gpio_cfg_output(BL_TIMING_PIN);
     nrf_gpio_pin_set(BL_TIMING_PIN);
@@ -63,73 +74,32 @@ int main(void)
     cc_enable();
     cc3xx_lowlevel_init();
 
-    int first_boot = (NRF_UICR_S->OTP[FW_HASH_OTP_BASE] == 0xFFFFFFFF);
-    uint32_t root_key[4] = {0};
-
     /* ==== R2: Always hash the riot-tee image first ==== */
     /* Disable flash cache to ensure we hash actual flash contents */
     NRF_NVMC_S->ICACHECNF = 0;
 
-    uint32_t fw_hash[8];
+    uint32_t fw_hash[FW_HASH_WORDS];
     sha256_hash((const uint8_t *)TEE_FLASH_START, TEE_FLASH_SIZE, fw_hash);
 
     /* Re-enable cache */
     NRF_NVMC_S->ICACHECNF = NVMC_ICACHECNF_CACHEEN_Enabled;
 
-    if (first_boot)
+    switch (provisioning_state())
     {
-        /* First boot: generate and store root key */
-
-        /* Step 2: Generate 128 bits of entropy via TRNG */
-        if (cc3xx_lowlevel_rng_get_random((uint8_t *)root_key, sizeof(root_key),
-                                          CC3XX_RNG_CRYPTOGRAPHICALLY_SECURE) != CC3XX_ERR_SUCCESS)
+    case UNPROVISIONED:
+        /* ==== R1: First boot, provision root key and firmware hash ==== */
+        provision(fw_hash);
+        break;
+    case PROVISIONED:
+        /* ==== R2: Later boots, verify riot-tee firmware integrity ==== */
+        if (!hash_matches_otp(fw_hash))
         {
             halt();
         }
-
-        /* Step 3: Write root key to KMU key slot in UICR (write-once) */
-        nvmc_enable_write();
-        int err = kmu_provision_key(ROOT_KEY_SLOT, root_key,
-                                    (uint32_t)&TEE_CC_HOST_RGF->HOST_IOT_KDR0);
-        wipe(root_key, sizeof(root_key));
-        if (err != 0)
-        {
-            halt();
-        }
-
-        /* Store the firmware hash in OTP */
-        for (int i = 0; i < 8; i++)
-        {
-            NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i] = fw_hash[i];
-            while (!NRF_NVMC_S->READY)
-                ;
-        }
-        nvmc_disable_write();
-    }
-    else
-    {
-        /* ==== R2: Verify riot-tee firmware integrity ==== */
-
-        /* Read stored hash from UICR OTP */
-        uint32_t stored_hash[8];
-        for (int i = 0; i < 8; i++)
-        {
-            stored_hash[i] = NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i];
-        }
-
-        /* Compare hashes, halt on mismatch */
-        int match = 1;
-        for (int i = 0; i < 8; i++)
-        {
-            if (fw_hash[i] != stored_hash[i])
-            {
-                match = 0;
-            }
-        }
-        if (!match)
-        {
-            halt();
-        }
+        break;
+    default:
+        /* A cut-off provisioning left a partial key or hash behind. */
+        halt();
     }
 
     /* Steps 4 and 5: Push the root key from the KMU into the CryptoCell KDR
@@ -188,8 +158,6 @@ static void cc_disable(void)
     NRF_CRYPTOCELL_S->ENABLE = 0;
 }
 
-/* ---- TRNG ---- */
-
 /* ---- SHA-256 via cc3xx low-level driver ---- */
 
 static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8])
@@ -210,6 +178,86 @@ static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8])
 
     cc3xx_lowlevel_hash_finish(digest, SHA256_OUTPUT_SIZE);
     cc3xx_lowlevel_hash_uninit();
+}
+
+/* ---- Provisioning ---- */
+
+static provisioning_state_t provisioning_state(void)
+{
+    if (NRF_UICR_S->OTP[PROVISIONED_OTP] == PROVISIONED_MAGIC)
+    {
+        return PROVISIONED;
+    }
+
+    /* Without the marker, everything provisioning writes must be erased.
+       The key slot header can be read without selecting the slot, and DEST
+       is the first word that provisioning writes into the slot. */
+    if (NRF_UICR_S->OTP[PROVISIONED_OTP] != ERASED ||
+        NRF_UICR_S->KEYSLOT.CONFIG[ROOT_KEY_SLOT].DEST != ERASED ||
+        NRF_UICR_S->KEYSLOT.CONFIG[ROOT_KEY_SLOT].PERM != ERASED)
+    {
+        return INCONSISTENT;
+    }
+    for (int i = 0; i < FW_HASH_WORDS; i++)
+    {
+        if (NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i] != ERASED)
+        {
+            return INCONSISTENT;
+        }
+    }
+    return UNPROVISIONED;
+}
+
+/* Generates the root key, stores it in the KMU, then stores the firmware
+   hash, and marks provisioning as complete as the very last write. */
+static void provision(const uint32_t fw_hash[FW_HASH_WORDS])
+{
+    /* Step 2: Generate 128 bits of entropy via TRNG */
+    uint32_t root_key[4];
+    if (cc3xx_lowlevel_rng_get_random((uint8_t *)root_key, sizeof(root_key),
+                                      CC3XX_RNG_CRYPTOGRAPHICALLY_SECURE) != CC3XX_ERR_SUCCESS)
+    {
+        halt();
+    }
+
+    nvmc_enable_write();
+
+    /* Steps 3 and 5: Write the root key to a KMU key slot in UICR
+       (write-once). The slot can only be pushed to the KDR, nobody can read
+       or change it. */
+    int err = kmu_provision_key(ROOT_KEY_SLOT, root_key,
+                                (uint32_t)&TEE_CC_HOST_RGF->HOST_IOT_KDR0);
+    wipe(root_key, sizeof(root_key));
+    if (err != 0)
+    {
+        halt();
+    }
+
+    /* Step 8: Store the firmware hash in OTP */
+    for (int i = 0; i < FW_HASH_WORDS; i++)
+    {
+        NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i] = fw_hash[i];
+        while (!NRF_NVMC_S->READY)
+            ;
+    }
+
+    NRF_UICR_S->OTP[PROVISIONED_OTP] = PROVISIONED_MAGIC;
+    while (!NRF_NVMC_S->READY)
+        ;
+
+    nvmc_disable_write();
+}
+
+/* Steps 8 to 9: Compare with the stored hash. The comparison does not stop
+   at the first difference. */
+static int hash_matches_otp(const uint32_t fw_hash[FW_HASH_WORDS])
+{
+    uint32_t diff = 0;
+    for (int i = 0; i < FW_HASH_WORDS; i++)
+    {
+        diff |= fw_hash[i] ^ NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i];
+    }
+    return diff == 0;
 }
 
 /* ---- KMU and KDR ---- */
