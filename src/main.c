@@ -57,6 +57,8 @@ static void provision(const uint32_t fw_hash[FW_HASH_WORDS]);
 static int hash_matches_otp(const uint32_t fw_hash[FW_HASH_WORDS]);
 static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr);
 static int kmu_push_kdr_and_lock(int slot);
+static uint32_t uicr_read(const volatile uint32_t *word);
+static void uicr_write(volatile uint32_t *word, uint32_t value);
 static void wipe(void *buf, size_t len);
 static void nvmc_enable_write(void);
 static void nvmc_disable_write(void);
@@ -173,7 +175,7 @@ static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8])
 
 static provisioning_state_t provisioning_state(void)
 {
-    if (NRF_UICR_S->OTP[PROVISIONED_OTP] == PROVISIONED_MAGIC)
+    if (uicr_read(&NRF_UICR_S->OTP[PROVISIONED_OTP]) == PROVISIONED_MAGIC)
     {
         return PROVISIONED;
     }
@@ -181,15 +183,15 @@ static provisioning_state_t provisioning_state(void)
     /* Without the marker, everything provisioning writes must be erased.
        The key slot header can be read without selecting the slot, and DEST
        is the first word that provisioning writes into the slot. */
-    if (NRF_UICR_S->OTP[PROVISIONED_OTP] != ERASED ||
-        NRF_UICR_S->KEYSLOT.CONFIG[ROOT_KEY_SLOT].DEST != ERASED ||
-        NRF_UICR_S->KEYSLOT.CONFIG[ROOT_KEY_SLOT].PERM != ERASED)
+    if (uicr_read(&NRF_UICR_S->OTP[PROVISIONED_OTP]) != ERASED ||
+        uicr_read(&NRF_UICR_S->KEYSLOT.CONFIG[ROOT_KEY_SLOT].DEST) != ERASED ||
+        uicr_read(&NRF_UICR_S->KEYSLOT.CONFIG[ROOT_KEY_SLOT].PERM) != ERASED)
     {
         return INCONSISTENT;
     }
     for (int i = 0; i < FW_HASH_WORDS; i++)
     {
-        if (NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i] != ERASED)
+        if (uicr_read(&NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i]) != ERASED)
         {
             return INCONSISTENT;
         }
@@ -225,14 +227,10 @@ static void provision(const uint32_t fw_hash[FW_HASH_WORDS])
     /* Step 8: Store the firmware hash in OTP */
     for (int i = 0; i < FW_HASH_WORDS; i++)
     {
-        NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i] = fw_hash[i];
-        while (!NRF_NVMC_S->READY)
-            ;
+        uicr_write(&NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i], fw_hash[i]);
     }
 
-    NRF_UICR_S->OTP[PROVISIONED_OTP] = PROVISIONED_MAGIC;
-    while (!NRF_NVMC_S->READY)
-        ;
+    uicr_write(&NRF_UICR_S->OTP[PROVISIONED_OTP], PROVISIONED_MAGIC);
 
     nvmc_disable_write();
 }
@@ -244,7 +242,7 @@ static int hash_matches_otp(const uint32_t fw_hash[FW_HASH_WORDS])
     uint32_t diff = 0;
     for (int i = 0; i < FW_HASH_WORDS; i++)
     {
-        diff |= fw_hash[i] ^ NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i];
+        diff |= fw_hash[i] ^ uicr_read(&NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i]);
     }
     return diff == 0;
 }
@@ -259,20 +257,14 @@ static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr
 {
     NRF_KMU_S->SELECTKEYSLOT = slot + 1;
 
-    NRF_UICR_S->KEYSLOT.CONFIG[slot].DEST = dest_addr;
-    while (!NRF_NVMC_S->READY)
-        ;
+    uicr_write(&NRF_UICR_S->KEYSLOT.CONFIG[slot].DEST, dest_addr);
     for (int i = 0; i < 4; i++)
     {
-        NRF_UICR_S->KEYSLOT.KEY[slot].VALUE[i] = key[i];
-        while (!NRF_NVMC_S->READY)
-            ;
+        uicr_write(&NRF_UICR_S->KEYSLOT.KEY[slot].VALUE[i], key[i]);
     }
     /* STATE=active, PUSH=enabled, READ=disabled, WRITE=disabled. Flash bits
        can only go 1->0, so clearing WRITE (bit 0) and READ (bit 1) suffices. */
-    NRF_UICR_S->KEYSLOT.CONFIG[slot].PERM = 0xFFFFFFFC;
-    while (!NRF_NVMC_S->READY)
-        ;
+    uicr_write(&NRF_UICR_S->KEYSLOT.CONFIG[slot].PERM, 0xFFFFFFFC);
 
     int blocked = NRF_KMU_S->STATUS & KMU_STATUS_BLOCKED_Msk;
     NRF_KMU_S->SELECTKEYSLOT = 0;
@@ -314,6 +306,31 @@ static int kmu_push_kdr_and_lock(int slot)
                                              CC_HOST_RGF_HOST_IOT_LCS_LCS_Secure))
         ;
     return 0;
+}
+
+/* ---- UICR access ---- */
+
+/* nRF9160 anomaly 7: two back-to-back flash reads, one from UICR and one
+   from main flash, can go wrong. The erratum names a UICR read followed by a
+   main flash read. On the board, the opposite order also failed: a literal
+   pool load directly before a UICR read returned a wrong address. Every UICR
+   access is therefore enclosed in DSBs. */
+static uint32_t uicr_read(const volatile uint32_t *word)
+{
+    __DSB();
+    uint32_t value = *word;
+    __DSB();
+    return value;
+}
+
+/* Writes one word of UICR and waits until the NVMC is done. */
+static void uicr_write(volatile uint32_t *word, uint32_t value)
+{
+    __DSB();
+    *word = value;
+    __DSB();
+    while (!NRF_NVMC_S->READY)
+        ;
 }
 
 /* Clears key material. The volatile pointer keeps the compiler from dropping
