@@ -61,7 +61,8 @@ static void wipe(void *buf, size_t len);
 static void nvmc_enable_write(void);
 static void nvmc_disable_write(void);
 static void spu_protect_region(int region);
-static void halt(void);
+static void jump_to_image(uint32_t image_addr) __attribute__((noreturn));
+static void halt(void) __attribute__((noreturn));
 
 int main(void)
 {
@@ -125,26 +126,13 @@ int main(void)
         spu_protect_region(i);
     }
 
-    /* ==== R4: Transfer execution to riot-tee ==== */
-
-    /* Step 14: Set VTOR to riot-tee vector table */
-    uint32_t *vtor = (uint32_t *)TEE_FLASH_START;
-    SCB->VTOR = TEE_FLASH_START;
-
-    /* Step 15: Set MSP from riot-tee vector table */
-    __set_MSP(vtor[0]);
-
 #ifdef BL_TIMING_PIN
     nrf_gpio_pin_set(BL_TIMING_PIN);
     nrf_gpio_pin_clear(BL_TIMING_PIN);
 #endif
 
-    /* Step 16: Branch to riot-tee reset handler */
-    void (*riot_tee_reset)(void) = (void (*)(void))(vtor[1]);
-    riot_tee_reset();
-
-    /* Should never reach here */
-    halt();
+    /* ==== R4: Transfer execution to riot-tee (steps 14 to 16) ==== */
+    jump_to_image(TEE_FLASH_START);
 }
 
 /* ---- CryptoCell enable/disable ---- */
@@ -365,6 +353,28 @@ static void spu_protect_region(int region)
     uint32_t perm = NRF_SPU_S->FLASHREGION[region].PERM;
     perm &= ~SPU_FLASHREGION_PERM_WRITE_Msk;
     NRF_SPU_S->FLASHREGION[region].PERM = perm | SPU_FLASHREGION_PERM_LOCK_Msk;
+}
+
+/* ---- Hand-over ---- */
+
+/* Sets VTOR and MSP from the image's vector table and branches to its reset
+   handler. Both happen in one asm block, so no code runs on the old stack
+   after MSP has changed. */
+static void jump_to_image(uint32_t image_addr)
+{
+    const uint32_t *vtor = (const uint32_t *)image_addr;
+
+    SCB->VTOR = image_addr;
+    __DSB();
+    __ISB();
+
+    __asm volatile (
+        "msr msp, %0\n"
+        "bx  %1\n"
+        :
+        : "r" (vtor[0]), "r" (vtor[1])
+    );
+    __builtin_unreachable();
 }
 
 /* ---- Halt ---- */
