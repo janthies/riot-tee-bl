@@ -81,8 +81,11 @@ int main(void)
         /* First boot: generate and store root key */
 
         /* Step 2: Generate 128 bits of entropy via TRNG */
-        cc3xx_lowlevel_rng_get_random((uint8_t *)root_key, sizeof(root_key),
-                                      CC3XX_RNG_CRYPTOGRAPHICALLY_SECURE);
+        if (cc3xx_lowlevel_rng_get_random((uint8_t *)root_key, sizeof(root_key),
+                                          CC3XX_RNG_CRYPTOGRAPHICALLY_SECURE) != CC3XX_ERR_SUCCESS)
+        {
+            halt();
+        }
 
         /* Step 3: Write root key to KMU key slot in UICR (write-once) */
         nvmc_enable_write();
