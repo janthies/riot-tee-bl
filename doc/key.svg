@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="990" height="270" viewBox="0 0 990 270" font-family="Helvetica, Arial, sans-serif" font-size="13" fill="#222">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="3.4" markerHeight="3.4" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#222"/></marker>
+    <marker id="d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#666"/></marker>
+    <g id="blocks">
+      <rect x="0" y="44" width="110" height="46" rx="4" fill="#fff" stroke="#222" stroke-width="1.2"/>
+      <text x="55" y="65" text-anchor="middle">CPU</text>
+      <rect x="0" y="170" width="110" height="46" rx="4" fill="#fff" stroke="#222" stroke-width="1.2"/>
+      <text x="55" y="190" text-anchor="middle">KMU</text>
+      <text x="55" y="207" text-anchor="middle" font-size="11.5" fill="#666">key slot</text>
+      <rect x="170" y="44" width="130" height="172" rx="6" fill="#f3f3f3" stroke="#222" stroke-width="1.2"/>
+      <text x="235" y="62" text-anchor="middle" font-size="11.5" font-weight="bold">CryptoCell</text>
+      <rect x="185" y="72" width="100" height="32" rx="4" fill="#fff" stroke="#222" stroke-width="1.2"/>
+      <text x="235" y="93" text-anchor="middle">TRNG</text>
+      <rect x="185" y="122" width="100" height="32" rx="4" fill="#fff" stroke="#222" stroke-width="1.2"/>
+      <text x="235" y="143" text-anchor="middle">AES</text>
+      <rect x="185" y="172" width="100" height="32" rx="4" fill="#fff" stroke="#222" stroke-width="1.2"/>
+      <text x="235" y="193" text-anchor="middle">KDR</text>
+    </g>
+  </defs>
+  <rect width="990" height="270" fill="#fff"/>
+
+  <!-- first boot -->
+  <g transform="translate(20,0)">
+    <text x="0" y="24" font-weight="bold">1  first boot</text>
+    <use href="#blocks"/>
+    <text x="55" y="82" text-anchor="middle" font-size="11.5" fill="#666">BL1</text>
+    <path d="M184,88 H112" stroke="#222" stroke-width="3" fill="none" marker-end="url(#b)"/>
+    <path d="M55,91 V168" stroke="#222" stroke-width="3" fill="none" marker-end="url(#b)"/>
+  </g>
+
+  <!-- every boot -->
+  <g transform="translate(355,0)">
+    <text x="0" y="24" font-weight="bold">2  every boot</text>
+    <use href="#blocks"/>
+    <text x="55" y="82" text-anchor="middle" font-size="11.5" fill="#666">BL1</text>
+    <path d="M55,91 V168" stroke="#666" stroke-width="1.2" stroke-dasharray="5,4" fill="none" marker-end="url(#d)"/>
+    <text x="64" y="133" font-size="11.5" fill="#666">push</text>
+    <path d="M111,193 H183" stroke="#222" stroke-width="3" fill="none" marker-end="url(#b)"/>
+  </g>
+
+  <!-- runtime -->
+  <g transform="translate(690,0)">
+    <text x="0" y="24" font-weight="bold">3  riot-tee at runtime</text>
+    <use href="#blocks"/>
+    <text x="55" y="82" text-anchor="middle" font-size="11.5" fill="#666">riot-tee</text>
+    <path d="M111,62 L183,128" stroke="#666" stroke-width="1.2" stroke-dasharray="5,4" fill="none" marker-end="url(#d)"/>
+    <path d="M183,146 L111,82" stroke="#666" stroke-width="1.2" stroke-dasharray="5,4" fill="none" marker-end="url(#d)"/>
+    <text x="150" y="70" font-size="11.5" fill="#666" text-anchor="start">input</text>
+    <text x="118" y="124" font-size="11.5" fill="#666" text-anchor="start">result</text>
+    <path d="M235,171 V156" stroke="#222" stroke-width="1.2" fill="none" marker-end="url(#a)"/>
+  </g>
+
+  <!-- legend -->
+  <path d="M20,252 H58" stroke="#222" stroke-width="3" fill="none" marker-end="url(#b)"/>
+  <text x="66" y="256" font-size="11.5" fill="#444">root key</text>
+  <path d="M140,252 H178" stroke="#666" stroke-width="1.2" stroke-dasharray="5,4" fill="none" marker-end="url(#d)"/>
+  <text x="186" y="256" font-size="11.5" fill="#444">command or data</text>
+</svg>
