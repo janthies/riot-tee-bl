@@ -2,7 +2,8 @@
  * Secure bootloader for nRF9160 RIOT-TEE
  *
  * Boot flow:
- *   R1: Provision device-unique root key via KMU (first boot only)
+ *   R1: Provision a device-unique root key in the KMU (first boot only) and
+ *       load it into the CryptoCell KDR on every boot
  *   R2: Verify riot-tee firmware integrity via SHA-256 hash
  *   R3: Lock bootloader flash regions via SPU
  *   R4: Transfer execution to riot-tee
@@ -41,6 +42,8 @@ static void cc_enable(void);
 static void cc_disable(void);
 static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8]);
 static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr);
+static int kmu_push_kdr(int slot);
+static void wipe(void *buf, size_t len);
 static void nvmc_enable_write(void);
 static void nvmc_disable_write(void);
 static void spu_lock_region(int region);
@@ -83,8 +86,10 @@ int main(void)
 
         /* Step 3: Write root key to KMU key slot in UICR (write-once) */
         nvmc_enable_write();
-        if (kmu_provision_key(ROOT_KEY_SLOT, root_key,
-                              (uint32_t)&TEE_CC_HOST_RGF->HOST_IOT_KDR0) != 0)
+        int err = kmu_provision_key(ROOT_KEY_SLOT, root_key,
+                                    (uint32_t)&TEE_CC_HOST_RGF->HOST_IOT_KDR0);
+        wipe(root_key, sizeof(root_key));
+        if (err != 0)
         {
             halt();
         }
@@ -97,9 +102,6 @@ int main(void)
                 ;
         }
         nvmc_disable_write();
-
-        /* Clear key material from RAM */
-        memset(root_key, 0, sizeof(root_key));
     }
     else
     {
@@ -127,28 +129,11 @@ int main(void)
         }
     }
 
-    /* Step 4: Load root key into CryptoCell KDR registers */
-    if (first_boot)
+    /* Step 4: Push the root key from the KMU into the CryptoCell KDR
+       registers, on the first boot as on every later one. */
+    if (kmu_push_kdr(ROOT_KEY_SLOT) != 0)
     {
-        /* First boot: key is still in RAM, write directly to KDR */
-        TEE_CC_HOST_RGF->HOST_IOT_KDR0 = root_key[0];
-        TEE_CC_HOST_RGF->HOST_IOT_KDR1 = root_key[1];
-        TEE_CC_HOST_RGF->HOST_IOT_KDR2 = root_key[2];
-        TEE_CC_HOST_RGF->HOST_IOT_KDR3 = root_key[3];
-    }
-    else
-    {
-        /* Subsequent boots: push root key from KMU to KDR over secure APB */
-        NRF_KMU_S->SELECTKEYSLOT = ROOT_KEY_SLOT + 1;
-        NRF_KMU_S->TASKS_PUSH_KEYSLOT = 1;
-        while (!NRF_KMU_S->EVENTS_KEYSLOT_PUSHED && !NRF_KMU_S->EVENTS_KEYSLOT_ERROR)
-            ;
-        if (NRF_KMU_S->EVENTS_KEYSLOT_ERROR)
-        {
-            halt();
-        }
-        NRF_KMU_S->EVENTS_KEYSLOT_PUSHED = 0;
-        NRF_KMU_S->SELECTKEYSLOT = 0;
+        halt();
     }
 
     /* Step 6: Lock KPRTL to prevent further KDR writes */
@@ -222,7 +207,7 @@ static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8])
     cc3xx_lowlevel_hash_uninit();
 }
 
-/* ---- KMU / UICR key management ---- */
+/* ---- KMU and KDR ---- */
 
 /* Writes a key slot in the order of the product specification: select the
    slot, destination, key value, permissions, deselect. Key slot ID n+1
@@ -250,6 +235,43 @@ static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr
     int blocked = NRF_KMU_S->STATUS & KMU_STATUS_BLOCKED_Msk;
     NRF_KMU_S->SELECTKEYSLOT = 0;
     return blocked ? -1 : 0;
+}
+
+/* Pushes a key slot into the KDR. The KDR registers report 1 on a read once
+   the whole key is retained. Returns 0 on success. */
+static int kmu_push_kdr(int slot)
+{
+    /* The KDR can only be loaded once per reset. */
+    if (TEE_CC_HOST_RGF->HOST_IOT_KDR0 == 1)
+    {
+        return -1;
+    }
+
+    NRF_KMU_S->EVENTS_KEYSLOT_PUSHED = 0;
+    NRF_KMU_S->EVENTS_KEYSLOT_REVOKED = 0;
+    NRF_KMU_S->EVENTS_KEYSLOT_ERROR = 0;
+    NRF_KMU_S->SELECTKEYSLOT = slot + 1;
+    NRF_KMU_S->TASKS_PUSH_KEYSLOT = 1;
+    while (!NRF_KMU_S->EVENTS_KEYSLOT_PUSHED &&
+           !NRF_KMU_S->EVENTS_KEYSLOT_REVOKED &&
+           !NRF_KMU_S->EVENTS_KEYSLOT_ERROR)
+        ;
+    int failed = NRF_KMU_S->EVENTS_KEYSLOT_REVOKED ||
+                 NRF_KMU_S->EVENTS_KEYSLOT_ERROR ||
+                 TEE_CC_HOST_RGF->HOST_IOT_KDR0 != 1;
+    NRF_KMU_S->SELECTKEYSLOT = 0;
+    return failed ? -1 : 0;
+}
+
+/* Clears key material. The volatile pointer keeps the compiler from dropping
+   the stores because the buffer is not read afterwards. */
+static void wipe(void *buf, size_t len)
+{
+    volatile uint8_t *p = buf;
+    while (len--)
+    {
+        *p++ = 0;
+    }
 }
 
 /* ---- NVMC (flash write control) ---- */
