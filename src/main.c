@@ -42,7 +42,7 @@ static void cc_enable(void);
 static void cc_disable(void);
 static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8]);
 static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr);
-static int kmu_push_kdr(int slot);
+static int kmu_push_kdr_and_lock(int slot);
 static void wipe(void *buf, size_t len);
 static void nvmc_enable_write(void);
 static void nvmc_disable_write(void);
@@ -132,14 +132,16 @@ int main(void)
         }
     }
 
-    /* Step 4: Push the root key from the KMU into the CryptoCell KDR
-       registers, on the first boot as on every later one. */
-    if (kmu_push_kdr(ROOT_KEY_SLOT) != 0)
+    /* Steps 4 and 5: Push the root key from the KMU into the CryptoCell KDR
+       registers, then set the CryptoCell lifecycle state to Secure. From then
+       on, the KDR cannot be written again until the next reset. */
+    if (kmu_push_kdr_and_lock(ROOT_KEY_SLOT) != 0)
     {
         halt();
     }
 
-    /* Step 6: Lock KPRTL to prevent further KDR writes */
+    /* Step 6: Disable the hard-coded RTL key K_PRTL, which is the same for
+       all devices with the same part code. */
     TEE_CC_HOST_RGF->HOST_IOT_KPRTL_LOCK = 1;
 
     cc_disable();
@@ -240,9 +242,11 @@ static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr
     return blocked ? -1 : 0;
 }
 
-/* Pushes a key slot into the KDR. The KDR registers report 1 on a read once
-   the whole key is retained. Returns 0 on success. */
-static int kmu_push_kdr(int slot)
+/* Pushes a key slot into the KDR and then sets the lifecycle state to
+   Secure. The order matters: once the state is Secure, the KDR does not
+   accept a value any more. The KDR registers report 1 on a read once the
+   whole key is retained. Returns 0 on success. */
+static int kmu_push_kdr_and_lock(int slot)
 {
     /* The KDR can only be loaded once per reset. */
     if (TEE_CC_HOST_RGF->HOST_IOT_KDR0 == 1)
@@ -263,7 +267,16 @@ static int kmu_push_kdr(int slot)
                  NRF_KMU_S->EVENTS_KEYSLOT_ERROR ||
                  TEE_CC_HOST_RGF->HOST_IOT_KDR0 != 1;
     NRF_KMU_S->SELECTKEYSLOT = 0;
-    return failed ? -1 : 0;
+    if (failed)
+    {
+        return -1;
+    }
+
+    TEE_CC_HOST_RGF->HOST_IOT_LCS = CC_HOST_RGF_HOST_IOT_LCS_LCS_Secure;
+    while (TEE_CC_HOST_RGF->HOST_IOT_LCS != (CC_HOST_RGF_HOST_IOT_LCS_LCS_IS_VALID_Msk |
+                                             CC_HOST_RGF_HOST_IOT_LCS_LCS_Secure))
+        ;
+    return 0;
 }
 
 /* Clears key material. The volatile pointer keeps the compiler from dropping
