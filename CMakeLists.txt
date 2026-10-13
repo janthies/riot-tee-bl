@@ -10,8 +10,10 @@ endif()
 set(CMAKE_C_COMPILER    ${TOOLCHAINPATH}/arm-none-eabi-gcc)
 set(CMAKE_ASM_COMPILER  ${TOOLCHAINPATH}/arm-none-eabi-gcc)
 
+# The cc3xx driver comes from TF-M. RIOT's pkg/riot-tee-bl passes the path of
+# its tf-m package.
 if(NOT DEFINED TFM_PATH)
-    set(TFM_PATH "~/work/repos/tf-m-github")
+    message(FATAL_ERROR "Set TFM_PATH to a TF-M source tree")
 endif()
 set(CC3XXPATH           "${TFM_PATH}/platform/ext/target/arm/drivers/cc3xx")
 set(NRFXPATH            "${PROJECT_SOURCE_DIR}/3rd-party/nrfx")
