@@ -40,7 +40,7 @@
 static void cc_enable(void);
 static void cc_disable(void);
 static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8]);
-static void kmu_provision_key(int slot, const uint32_t *key, uint32_t dest_addr);
+static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr);
 static void nvmc_enable_write(void);
 static void nvmc_disable_write(void);
 static void spu_lock_region(int region);
@@ -83,8 +83,11 @@ int main(void)
 
         /* Step 3: Write root key to KMU key slot in UICR (write-once) */
         nvmc_enable_write();
-        kmu_provision_key(ROOT_KEY_SLOT, root_key,
-                          (uint32_t)&TEE_CC_HOST_RGF->HOST_IOT_KDR0);
+        if (kmu_provision_key(ROOT_KEY_SLOT, root_key,
+                              (uint32_t)&TEE_CC_HOST_RGF->HOST_IOT_KDR0) != 0)
+        {
+            halt();
+        }
 
         /* Store the firmware hash in OTP */
         for (int i = 0; i < 8; i++)
@@ -221,33 +224,32 @@ static void sha256_hash(const uint8_t *data, uint32_t len, uint32_t digest[8])
 
 /* ---- KMU / UICR key management ---- */
 
-static void kmu_provision_key(int slot, const uint32_t *key, uint32_t dest_addr)
+/* Writes a key slot in the order of the product specification: select the
+   slot, destination, key value, permissions, deselect. Key slot ID n+1
+   belongs to UICR index n. Returns -1 if the KMU blocked a write, for
+   example because the slot was not empty. */
+static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr)
 {
-    /* Select key slot (1-indexed) */
     NRF_KMU_S->SELECTKEYSLOT = slot + 1;
 
-    /* Write 128-bit key value */
+    NRF_UICR_S->KEYSLOT.CONFIG[slot].DEST = dest_addr;
+    while (!NRF_NVMC_S->READY)
+        ;
     for (int i = 0; i < 4; i++)
     {
         NRF_UICR_S->KEYSLOT.KEY[slot].VALUE[i] = key[i];
         while (!NRF_NVMC_S->READY)
             ;
     }
-
-    /* Write destination address (secure APB push target) */
-    NRF_UICR_S->KEYSLOT.CONFIG[slot].DEST = dest_addr;
-    while (!NRF_NVMC_S->READY)
-        ;
-
-    /* Write permissions: STATE=active, PUSH=enabled, READ=disabled, WRITE=disabled
-       Default erased value is 0xFFFFFFFF (all bits set).
-       Flash bits can only go 1→0. Clear WRITE (bit 0) and READ (bit 1). */
+    /* STATE=active, PUSH=enabled, READ=disabled, WRITE=disabled. Flash bits
+       can only go 1->0, so clearing WRITE (bit 0) and READ (bit 1) suffices. */
     NRF_UICR_S->KEYSLOT.CONFIG[slot].PERM = 0xFFFFFFFC;
     while (!NRF_NVMC_S->READY)
         ;
 
-    /* Deselect key slot */
+    int blocked = NRF_KMU_S->STATUS & KMU_STATUS_BLOCKED_Msk;
     NRF_KMU_S->SELECTKEYSLOT = 0;
+    return blocked ? -1 : 0;
 }
 
 /* ---- NVMC (flash write control) ---- */
