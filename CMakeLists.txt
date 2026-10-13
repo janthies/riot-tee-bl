@@ -106,6 +106,12 @@ target_compile_definitions(${EXECUTABLE_NAME}
     TEE_FLASH_SIZE=${TEE_FLASH_SIZE}
 )
 
+# Optional GPIO pin that the bootloader toggles at its start and right before
+# the jump, for measuring the boot time with an oscilloscope.
+if(DEFINED BL_TIMING_PIN)
+    target_compile_definitions(${EXECUTABLE_NAME} PUBLIC BL_TIMING_PIN=${BL_TIMING_PIN})
+endif()
+
 target_compile_options(${EXECUTABLE_NAME} PUBLIC
     ${FLAGS}
     "-mcmse"

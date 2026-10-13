@@ -22,8 +22,9 @@
 #include "cc3xx_hash.h"
 #include "cc3xx_rng.h"
 
+#ifdef BL_TIMING_PIN
 #include "nrf_gpio.h"
-#define OUTPUT_PIN 2
+#endif
 
 /* KMU key slot used for the device root key (4 x 32-bit = 128 bits) */
 #define ROOT_KEY_SLOT 0
@@ -49,9 +50,11 @@ int main(void)
 {
     /* ==== R1: Provision device-unique root key ==== */
 
-    nrf_gpio_cfg_output(OUTPUT_PIN);
-    nrf_gpio_pin_set(OUTPUT_PIN);
-    nrf_gpio_pin_clear(OUTPUT_PIN);
+#ifdef BL_TIMING_PIN
+    nrf_gpio_cfg_output(BL_TIMING_PIN);
+    nrf_gpio_pin_set(BL_TIMING_PIN);
+    nrf_gpio_pin_clear(BL_TIMING_PIN);
+#endif
 
     /* Step 1: Enable CryptoCell */
     cc_enable();
@@ -167,8 +170,10 @@ int main(void)
     /* Step 15: Set MSP from riot-tee vector table */
     __set_MSP(vtor[0]);
 
-    nrf_gpio_pin_set(OUTPUT_PIN);
-    nrf_gpio_pin_clear(OUTPUT_PIN);
+#ifdef BL_TIMING_PIN
+    nrf_gpio_pin_set(BL_TIMING_PIN);
+    nrf_gpio_pin_clear(BL_TIMING_PIN);
+#endif
 
     /* Step 16: Branch to riot-tee reset handler */
     void (*riot_tee_reset)(void) = (void (*)(void))(vtor[1]);
