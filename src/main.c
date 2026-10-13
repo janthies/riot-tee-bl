@@ -79,14 +79,8 @@ int main(void)
     cc3xx_lowlevel_init();
 
     /* ==== R2: Always hash the riot-tee image first ==== */
-    /* Disable flash cache to ensure we hash actual flash contents */
-    NRF_NVMC_S->ICACHECNF = 0;
-
     uint32_t fw_hash[FW_HASH_WORDS];
     sha256_hash((const uint8_t *)TEE_FLASH_START, TEE_FLASH_SIZE, fw_hash);
-
-    /* Re-enable cache */
-    NRF_NVMC_S->ICACHECNF = NVMC_ICACHECNF_CACHEEN_Enabled;
 
     switch (provisioning_state())
     {
