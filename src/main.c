@@ -5,7 +5,8 @@
  *   R1: Provision a device-unique root key in the KMU (first boot only) and
  *       load it into the CryptoCell KDR on every boot
  *   R2: Verify riot-tee firmware integrity via SHA-256 hash
- *   R3: Lock bootloader flash regions via SPU
+ *   R3: Lock the KDR until the next reset and write-protect the bootloader
+ *       flash
  *   R4: Transfer execution to riot-tee
  */
 
@@ -38,7 +39,7 @@
 #define PROVISIONED_MAGIC   0x52544231  /* "RTB1" */
 #define ERASED              0xFFFFFFFF
 
-/* Number of bootloader flash regions to lock */
+/* Number of bootloader flash regions to protect */
 #define BL_REGION_COUNT (BL_FLASH_SIZE / 0x8000)
 
 typedef enum {
@@ -59,7 +60,7 @@ static int kmu_push_kdr_and_lock(int slot);
 static void wipe(void *buf, size_t len);
 static void nvmc_enable_write(void);
 static void nvmc_disable_write(void);
-static void spu_lock_region(int region);
+static void spu_protect_region(int region);
 static void halt(void);
 
 int main(void)
@@ -116,12 +117,12 @@ int main(void)
 
     cc_disable();
 
-    /* ==== R3: Lock bootloader flash regions ==== */
+    /* ==== R3: Write-protect the bootloader flash regions ==== */
 
-    /* Step 11: Set SPU FLASHREGION[n].PERM.LOCK for bootloader regions */
+    /* Step 11: Remove write permission and set LOCK for bootloader regions */
     for (int i = 0; i < BL_REGION_COUNT; i++)
     {
-        spu_lock_region(i);
+        spu_protect_region(i);
     }
 
     /* ==== R4: Transfer execution to riot-tee ==== */
@@ -354,12 +355,16 @@ static void nvmc_disable_write(void)
         ;
 }
 
-/* ---- SPU flash region locking ---- */
+/* ---- SPU flash region protection ---- */
 
-static void spu_lock_region(int region)
+/* Removes the write permission and locks the region until the next reset.
+   Read and execute stay, because the bootloader still runs from here until
+   the jump. LOCK alone would freeze the reset default, which allows writes. */
+static void spu_protect_region(int region)
 {
-    /* Set the LOCK bit to prevent further modification of this region's permissions */
-    NRF_SPU_S->FLASHREGION[region].PERM |= SPU_FLASHREGION_PERM_LOCK_Msk;
+    uint32_t perm = NRF_SPU_S->FLASHREGION[region].PERM;
+    perm &= ~SPU_FLASHREGION_PERM_WRITE_Msk;
+    NRF_SPU_S->FLASHREGION[region].PERM = perm | SPU_FLASHREGION_PERM_LOCK_Msk;
 }
 
 /* ---- Halt ---- */
