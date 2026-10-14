@@ -266,9 +266,12 @@ static int kmu_provision_key(int slot, const uint32_t key[4], uint32_t dest_addr
 }
 
 /* Pushes a key slot into the KDR and then sets the lifecycle state to
-   Secure. The order matters: once the state is Secure, the KDR does not
-   accept a value any more. The KDR registers report 1 on a read once the
-   whole key is retained. Returns 0 on success. */
+   Secure. After a reset, the KDR keeps the first value written to it,
+   unless the state is switched to DebugEnable, which allows overwriting it.
+   The state can be set only once per reset, so setting it to Secure keeps
+   later software from switching to DebugEnable and replacing the key. The
+   KDR registers report 1 on a read once the whole key is retained. Returns
+   0 on success. */
 static int kmu_push_kdr_and_lock(int slot)
 {
     /* The KDR can only be loaded once per reset. */
