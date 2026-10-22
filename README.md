@@ -4,7 +4,7 @@ riot-tee-bl is a minimal first-stage bootloader (BL1) for [riot-tee](https://git
 
 ## Why riot-tee needs a bootloader
 
-Without a bootloader, riot-tee runs directly after reset, and three things are missing. First, the device has no key of its own. When the CryptoCell's key register (KDR) is empty, riot-tee falls back to a key from its source code, and on the board this fallback even ends up as the all-zero key, because riot-tee writes the key after it has switched the CryptoCell off. Second, nothing checks the riot-tee image before it runs. Third, nothing protects the image or the key from software that runs later. The Hauptprojekt derives four requirements from these gaps, and the labels R1 to R4 in the figure below refer to them.
+Without a bootloader, riot-tee runs directly after reset, and three things are missing. First, the device has no key of its own. When the CryptoCell's key register (KDR) is empty, riot-tee falls back to a key from its source code, and on the board this fallback even ends up as the all-zero key, because riot-tee writes the key after it has switched the CryptoCell off. Second, nothing checks the riot-tee image before it runs. Third, nothing protects the image or the key from software that runs later. The Hauptprojekt derives four requirements from these gaps.
 
 | | Requirement |
 |---|---|
@@ -17,17 +17,21 @@ BL1 meets them with a single C file of about 400 lines. Built with `MinSizeRel`,
 
 ## How it works
 
-![Boot flow of BL1](doc/boot-flow.png)
+![nRF9160 blocks used by BL1](doc/nrf9160-blocks.svg)
 
-On every boot, BL1 first hashes the whole riot-tee region, `0x8000` to `0x27FFF`, with the SHA-256 engine of the CryptoCell. Only then does it read the UICR to find out whether the device has been provisioned. Hashing first means that both paths through the figure work on the same measurement. Three states are possible:
+The figure shows the parts of the nRF9160 that BL1 uses. The numbers refer to the steps of the boot sequence below.
+
+![Boot sequence of BL1](doc/bl1-sequence.svg)
+
+On every boot, BL1 first hashes the whole riot-tee region, `0x8000` to `0x27FFF`, with the SHA-256 engine of the CryptoCell. Only then does it read the UICR to find out whether the device has been provisioned. Hashing first means that steps 2a and 2b work on the same measurement. Three states are possible:
 
 | State | Condition | BL1 does |
 |---|---|---|
-| unprovisioned | marker, hash and key slot header are erased | provisions the device |
+| empty | marker, hash and key slot header are erased | provisions the device |
 | provisioned | the marker is set | compares the hash, halts on a mismatch |
-| inconsistent | anything else | halts |
+| incomplete | anything else | halts |
 
-Provisioning happens once, on the first boot. The TRNG of the CryptoCell produces a 128-bit root key, and BL1 writes it into key slot 0 of the KMU. The slot's destination is the KDR, and its permissions allow only a push, neither reading nor writing. BL1 then wipes its copy of the key from RAM, writes the hash into the UICR OTP words 0 to 7, and writes the marker `0x52544231` ("RTB1") into OTP word 8 as the very last step. Because the slot header is written first and the marker last, a power loss during provisioning always leaves the inconsistent state behind. BL1 then halts instead of provisioning over a half-written slot, and only a full chip erase brings the device back.
+Provisioning happens once, on the first boot. The TRNG of the CryptoCell produces a 128-bit root key, and BL1 writes it into key slot 0 in the UICR, which the KMU guards. The slot's destination is the KDR, and its permissions allow only a push, neither reading nor writing. BL1 then wipes its copy of the key from RAM, writes the hash into the UICR OTP words 0 to 7, and writes the marker `0x52544231` ("RTB1") into OTP word 8 as the very last step. Because the slot header is written first and the marker last, a power loss during provisioning always leaves the incomplete state behind. BL1 then halts instead of provisioning over a half-written slot, and only a full chip erase brings the device back.
 
 On every boot that gets past the hash, the KMU pushes the root key from the slot into the KDR over a dedicated bus, so the key never passes through the CPU. BL1 then sets the lifecycle state of the CryptoCell to Secure. In this state the KDR ignores every further write until the next reset, and the state itself can be set only once per reset. Without this step, software that runs after BL1 could switch the CryptoCell to DebugEnable and load a key of its own choosing. BL1 also locks K<sub>PRTL</sub>, a fixed key that is the same on all chips of the same part.
 
