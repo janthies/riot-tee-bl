@@ -27,8 +27,8 @@
 /* Minimal variant: P0.16 is high while BL1 runs. Instrumented variant: the
    phase pin toggles at the start, after every phase and at the end of BL1,
    and riot-tee and RIOT continue to toggle it (branch eval/boot-markers). */
-/* #define BL_TIMING_PIN 16 */
-#define BL_TIMING_PHASE_PIN 10
+#define BL_TIMING_PIN 10        /* reference run: the same pin, only start and end */
+/* #define BL_TIMING_PHASE_PIN 10 */
 #define BL_TIMING_CLOCK_PIN 13
 /* #define BL_TIMING_TOGGLE_BURST 10000 */
 
