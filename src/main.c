@@ -24,8 +24,24 @@
 #include "cc3xx_hash.h"
 #include "cc3xx_rng.h"
 
-#ifdef BL_TIMING_PIN
+/* Minimal variant: P0.16 is high while BL1 runs. Instrumented variant: the
+   phase pin toggles at the start, after every phase and at the end of BL1,
+   and riot-tee and RIOT continue to toggle it (branch eval/boot-markers). */
+/* #define BL_TIMING_PIN 16 */
+#define BL_TIMING_PHASE_PIN 10
+#define BL_TIMING_CLOCK_PIN 13
+/* #define BL_TIMING_TOGGLE_BURST 10000 */
+
+#if defined(BL_TIMING_PIN) || defined(BL_TIMING_PHASE_PIN)
 #include "nrf_gpio.h"
+#endif
+
+#ifdef BL_TIMING_PHASE_PIN
+/* Toggles at the end of every phase: the time between two edges is the
+   duration of one phase. */
+#define BL_PHASE() nrf_gpio_pin_toggle(BL_TIMING_PHASE_PIN)
+#else
+#define BL_PHASE()
 #endif
 
 /* KMU key slot used for the device root key (4 x 32-bit = 128 bits) */
@@ -65,24 +81,54 @@ static void nvmc_disable_write(void);
 static void spu_protect_region(int region);
 static void jump_to_image(uint32_t image_addr) __attribute__((noreturn));
 static void halt(void) __attribute__((noreturn));
+#ifdef BL_TIMING_CLOCK_PIN
+static void clock_ref_start(void);
+static void clock_ref_stop(void);
+#endif
 
 int main(void)
 {
+    /* The timing instrumentation is set up before the first edge, so that
+       only the phase toggles fall into the measured interval. */
+#ifdef BL_TIMING_PHASE_PIN
+    nrf_gpio_cfg_output(BL_TIMING_PHASE_PIN);
+    nrf_gpio_pin_clear(BL_TIMING_PHASE_PIN);
+#endif
+#ifdef BL_TIMING_CLOCK_PIN
+    clock_ref_start();
+#endif
+#ifdef BL_TIMING_TOGGLE_BURST
+    /* Calibration: BL_TIMING_TOGGLE_BURST toggles of the phase pin in a row,
+       100 per loop pass, to measure the cost of one BL_PHASE(). */
+#define BL_PHASE10() BL_PHASE(); BL_PHASE(); BL_PHASE(); BL_PHASE(); BL_PHASE(); \
+                     BL_PHASE(); BL_PHASE(); BL_PHASE(); BL_PHASE(); BL_PHASE()
+    for (int i = 0; i < BL_TIMING_TOGGLE_BURST / 100; i++)
+    {
+        BL_PHASE10(); BL_PHASE10(); BL_PHASE10(); BL_PHASE10(); BL_PHASE10();
+        BL_PHASE10(); BL_PHASE10(); BL_PHASE10(); BL_PHASE10(); BL_PHASE10();
+    }
+#endif
 #ifdef BL_TIMING_PIN
+    /* High while BL1 runs: the pulse width is the boot time of BL1. */
     nrf_gpio_cfg_output(BL_TIMING_PIN);
     nrf_gpio_pin_set(BL_TIMING_PIN);
-    nrf_gpio_pin_clear(BL_TIMING_PIN);
 #endif
+    BL_PHASE();     /* start of BL1 */
 
     /* Step 1: Enable CryptoCell */
     cc_enable();
     cc3xx_lowlevel_init();
+    BL_PHASE();
 
     /* ==== R2: Always hash the riot-tee image first ==== */
     uint32_t fw_hash[FW_HASH_WORDS];
     sha256_hash((const uint8_t *)TEE_FLASH_START, TEE_FLASH_SIZE, fw_hash);
+    BL_PHASE();
 
-    switch (provisioning_state())
+    provisioning_state_t state = provisioning_state();
+    BL_PHASE();
+
+    switch (state)
     {
     case UNPROVISIONED:
         /* ==== R1: First boot, provision root key and firmware hash ==== */
@@ -94,6 +140,7 @@ int main(void)
         {
             halt();
         }
+        BL_PHASE();
         break;
     default:
         /* A cut-off provisioning left a partial key or hash behind. */
@@ -107,12 +154,14 @@ int main(void)
     {
         halt();
     }
+    BL_PHASE();
 
     /* Step 6: Disable the hard-coded RTL key K_PRTL, which is the same for
        all devices with the same part code. */
     TEE_CC_HOST_RGF->HOST_IOT_KPRTL_LOCK = 1;
 
     cc_disable();
+    BL_PHASE();
 
     /* ==== R3: Write-protect the bootloader flash regions ==== */
 
@@ -121,10 +170,13 @@ int main(void)
     {
         spu_protect_region(i);
     }
+    BL_PHASE();     /* end of BL1 */
 
 #ifdef BL_TIMING_PIN
-    nrf_gpio_pin_set(BL_TIMING_PIN);
     nrf_gpio_pin_clear(BL_TIMING_PIN);
+#endif
+#ifdef BL_TIMING_CLOCK_PIN
+    clock_ref_stop();
 #endif
 
     /* ==== R4: Transfer execution to riot-tee (steps 14 to 16) ==== */
@@ -204,6 +256,7 @@ static void provision(const uint32_t fw_hash[FW_HASH_WORDS])
     {
         halt();
     }
+    BL_PHASE();
 
     nvmc_enable_write();
 
@@ -217,16 +270,19 @@ static void provision(const uint32_t fw_hash[FW_HASH_WORDS])
     {
         halt();
     }
+    BL_PHASE();
 
     /* Step 8: Store the firmware hash in OTP */
     for (int i = 0; i < FW_HASH_WORDS; i++)
     {
         uicr_write(&NRF_UICR_S->OTP[FW_HASH_OTP_BASE + i], fw_hash[i]);
     }
+    BL_PHASE();
 
     uicr_write(&NRF_UICR_S->OTP[PROVISIONED_OTP], PROVISIONED_MAGIC);
 
     nvmc_disable_write();
+    BL_PHASE();
 }
 
 /* Steps 8 to 9: Compare with the stored hash. The comparison does not stop
@@ -297,6 +353,7 @@ static int kmu_push_kdr_and_lock(int slot)
     {
         return -1;
     }
+    BL_PHASE();
 
     TEE_CC_HOST_RGF->HOST_IOT_LCS = CC_HOST_RGF_HOST_IOT_LCS_LCS_Secure;
     while (TEE_CC_HOST_RGF->HOST_IOT_LCS != (CC_HOST_RGF_HOST_IOT_LCS_LCS_IS_VALID_Msk |
@@ -390,6 +447,44 @@ static void jump_to_image(uint32_t image_addr)
     );
     __builtin_unreachable();
 }
+
+/* ---- Clock reference ---- */
+
+#ifdef BL_TIMING_CLOCK_PIN
+/* TIMER2 counts the 16 MHz clock derived from HFCLK and, through DPPI and
+   GPIOTE, toggles the pin every 8000 ticks without the CPU. At the nominal
+   64 MHz the pin toggles every 0.5 ms, so the measured period gives the real
+   HFCLK frequency. */
+#define CLOCK_REF_TICKS     8000
+#define CLOCK_REF_DPPI_CH   0
+
+static void clock_ref_start(void)
+{
+    NRF_GPIOTE0_S->CONFIG[0] = (GPIOTE_CONFIG_MODE_Task << GPIOTE_CONFIG_MODE_Pos) |
+                               (BL_TIMING_CLOCK_PIN << GPIOTE_CONFIG_PSEL_Pos) |
+                               (GPIOTE_CONFIG_POLARITY_Toggle << GPIOTE_CONFIG_POLARITY_Pos);
+    NRF_GPIOTE0_S->SUBSCRIBE_OUT[0] = CLOCK_REF_DPPI_CH | GPIOTE_SUBSCRIBE_OUT_EN_Msk;
+    NRF_TIMER2_S->MODE = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;
+    NRF_TIMER2_S->BITMODE = TIMER_BITMODE_BITMODE_32Bit << TIMER_BITMODE_BITMODE_Pos;
+    NRF_TIMER2_S->PRESCALER = 0;
+    NRF_TIMER2_S->CC[0] = CLOCK_REF_TICKS;
+    NRF_TIMER2_S->SHORTS = TIMER_SHORTS_COMPARE0_CLEAR_Msk;
+    NRF_TIMER2_S->PUBLISH_COMPARE[0] = CLOCK_REF_DPPI_CH | TIMER_PUBLISH_COMPARE_EN_Msk;
+    NRF_DPPIC_S->CHENSET = 1 << CLOCK_REF_DPPI_CH;
+    NRF_TIMER2_S->TASKS_START = 1;
+}
+
+/* Leaves TIMER2, DPPI and GPIOTE as they were after reset. */
+static void clock_ref_stop(void)
+{
+    NRF_TIMER2_S->TASKS_STOP = 1;
+    NRF_DPPIC_S->CHENCLR = 1 << CLOCK_REF_DPPI_CH;
+    NRF_TIMER2_S->PUBLISH_COMPARE[0] = 0;
+    NRF_TIMER2_S->SHORTS = 0;
+    NRF_GPIOTE0_S->SUBSCRIBE_OUT[0] = 0;
+    NRF_GPIOTE0_S->CONFIG[0] = 0;
+}
+#endif
 
 /* ---- Halt ---- */
 
