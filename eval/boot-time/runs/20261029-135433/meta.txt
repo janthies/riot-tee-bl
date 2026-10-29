@@ -1,0 +1,22 @@
+command: bootbench.py run --rounds 5 --boots 4 --marker-channel 1 --clock-channel 4 --probe 10 --mdepth 6000000 --timebase 0.02 --pre-divs 0.5 --image /home/jan/project_hauptprojekt/riot_eval/tests/sys/psa_riot_tee/bin/nrf9160dk/tests_psa_riot_tee.bl.combined.bin
+image: /home/jan/project_hauptprojekt/riot_eval/tests/sys/psa_riot_tee/bin/nrf9160dk/tests_psa_riot_tee.bl.combined.bin
+sha256: 0fe33ce4a91bd3658c475deaf4d9d9a2c38a21f9c245896cf51fc53b5491d514
+riot-tee-bl: /home/jan/work/riot-tee-bl master 18621ad9187a729dd31e7ff13af42e689e993f08 modified: M doc/bl1-sequence.svg,  M doc/nrf9160-blocks.svg,  M src/main.c
+RIOT: /home/jan/project_hauptprojekt/riot_eval eval/boot-markers b5a552b8543a12e4228c7c111ff8eb00becbe945 modified: M tests/sys/psa_riot_tee/main.c
+*IDN? RIGOL TECHNOLOGIES,DS1104Z,DS1ZA192208202,00.04.04.SP3
+:CHAN1:PROB? 1.000000e+01
+:CHAN1:SCAL? 5.000000e-01
+:CHAN1:OFFS? -1.000000e+00
+:CHAN4:PROB? 1.000000e+01
+:CHAN4:SCAL? 5.000000e-01
+:CHAN4:OFFS? -1.000000e+00
+:TIM:MAIN:SCAL? 2.0000000e-02
+:TIM:MAIN:OFFS? 1.1000000e-01
+:TRIG:EDG:SOUR? CHAN1
+:TRIG:EDG:LEV? 9.000000e-01
+:ACQ:MDEP? 6000000
+:ACQ:SRAT? 2.500000e+07
+riot-tee: /home/jan/work/riot-tee-eval eval/boot-markers 8356f6e104885833ae0a3f9376509c37d166ebf5 modified: M CMakeLists.txt,  M src/main.c,  M src/random/tee_random.c
+arm-none-eabi-gcc: arm-none-eabi-gcc (15:13.2.rel1-2) 13.2.1 20231009
+cmake: cmake version 4.4.5
+nrfjprog: nrfjprog version: 10.24.2 external

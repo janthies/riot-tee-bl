@@ -1,0 +1,166 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8bd79f1..48e50d3 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -58,7 +58,7 @@ configure_file(
+ set(LINKER_SCRIPT       "${CMAKE_SOURCE_DIR}/ld/common.ld")
+ set(NSC_LIB             "${CMAKE_BINARY_DIR}/nsc_lib.o")
+ set(MAP_FILE            "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.map")
+-set(CMAKE_BUILD_TYPE    "Debug")
++set(CMAKE_BUILD_TYPE    "RelWithDebInfo")    # boot-time evaluation: -O2
+ 
+ set(FLAGS
+     "-mcpu=cortex-m33"
+diff --git a/src/main.c b/src/main.c
+index 9b10117..2bcadb7 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -24,6 +24,8 @@
+ 
+ #include <arm_cmse.h>
+ 
++#include "tee_timing.h"
++
+ #include "nrf_spu.h"
+ #include "nrfx.h"
+ 
+@@ -45,6 +47,9 @@ typedef int __attribute__((cmse_nonsecure_call)) nsfunc(void);
+ 
+ int main(void)
+ {
++   NRF_P0_S->DIRSET = 1 << TEE_TIMING_STAGE_PIN;
++   tee_timing_mark();
++
+    /* Flash is separated into 32 * 32KB regions.
+       Secure regions are defined by FIRST_NS_FLASH_REGION, all others are NS */
+    for (uint32_t i = FIRST_NS_FLASH_REGION; i < 32; i++)
+@@ -54,6 +59,7 @@ int main(void)
+       NRF_SPU_S->FLASHREGION[i].PERM &=
+           ~(SPU_FLASHREGION_PERM_SECATTR_Msk);
+    }
++   tee_timing_mark();
+ 
+    /* RAM is separated into 32 * 8 KB regions.
+       Secure regions are defined by FIRST_NS_RAM_REGION, all others are NS */
+@@ -64,6 +70,7 @@ int main(void)
+       NRF_SPU_S->RAMREGION[i].PERM &=
+           ~(SPU_RAMREGION_PERM_SECATTR_Msk);
+    }
++   tee_timing_mark();
+ 
+    /* NSC flash region needs to be configured at the
+       end of the last flash region.
+@@ -76,6 +83,7 @@ int main(void)
+       NSC region is 32B, which is the smallest possible size */
+    NRF_SPU_S->FLASHNSC[flash_nsc_id].REGION = NSC_FLASH_REGION;
+    NRF_SPU_S->FLASHNSC[flash_nsc_id].SIZE = NRF_SPU_NSC_SIZE_32B;
++   tee_timing_mark();
+ 
+    /* Configure GPIO P0 for NS access */
+    NRF_SPU_S->PERIPHID[NRFX_PERIPHERAL_ID_GET(NRF_P0_NS)].PERM &= ~(SPU_FLASHREGION_PERM_SECATTR_Msk);
+@@ -88,18 +96,24 @@ int main(void)
+ 
+    /* Configure TIMER1 for NS access */
+    NRF_SPU_S->PERIPHID[NRFX_PERIPHERAL_ID_GET(NRF_TIMER1_NS)].PERM &= ~(SPU_FLASHREGION_PERM_SECATTR_Msk);
++   tee_timing_mark();
+ 
+    /* Set GPIO P0 pin attributes to 0 (= non-secure) */
+    NRF_SPU_S->GPIOPORT[0].PERM = 0x00000000ul;
++   tee_timing_mark();
+ 
+-   NRF_P0_S->DIRSET |= (1 << 7);
+-   NRF_P0_S->OUTCLR |= (1 << 7);
++   /* eval: "|=" read DIRSET and OUTCLR, which return DIR and OUT, so the
++      original OUTCLR line cleared every high output, the stage pin included */
++   NRF_P0_S->DIRSET = (1 << 7);
++   NRF_P0_S->OUTCLR = (1 << 7);
++   tee_timing_mark();
+ 
+    /* Make sure floating point registers are cleared when returning to non-secure world */
+    FPU->FPCCR |= FPU_FPCCR_TS_Msk | FPU_FPCCR_CLRONRET_Msk | FPU_FPCCR_CLRONRETS_Msk;
+ 
+    /* Raise NS exception priority to 0x80 to prevent preemption of secure fault exceptions */
+    SCB->AIRCR |= SCB_AIRCR_PRIS_Msk;
++   tee_timing_mark();
+ 
+    /* Initialize the random number generator */
+    CYS_error_t status = tee_init_random();
+@@ -112,12 +126,14 @@ int main(void)
+    NRF_CRYPTOCELL->ENABLE = 1;
+    cc3xx_lowlevel_init();
+    NRF_CRYPTOCELL->ENABLE = 0;
++   tee_timing_mark();
+ 
+    status = tee_rot_try_generate_aes_key();
+    if (status != CYS_SUCCESS && status != CYS_ERROR_ALREADY_EXISTS)
+    {
+       puts("AES Platform key generation failed");
+    }
++   tee_timing_mark();
+ 
+    /* Write NS vector table to SCB_NS->VTOR to be able to jump to NS image*/
+    SCB_NS->VTOR = TZ_START_NS;
+@@ -128,6 +144,7 @@ int main(void)
+ 
+    /* Call the non-secure reset handler */
+    nsfunc *ns_reset_handler = (nsfunc *)(vtor[1]);
++   tee_timing_mark();
+    ns_reset_handler();
+ 
+    while (1)
+diff --git a/src/random/tee_random.c b/src/random/tee_random.c
+index 6a8e40e..61896aa 100644
+--- a/src/random/tee_random.c
++++ b/src/random/tee_random.c
+@@ -28,6 +28,7 @@
+ #include "tee_io_sanitizer.h"
+ #include "tee_secure_io.h"
+ #include "tee_crypto_common.h"
++#include "tee_timing.h"
+ 
+ #define CC3XX_DRBG_INITIAL_ENTROPY_SIZE (32)
+ #define CC3XX_DRBG_RESEED_ENTROPY_SIZE  (32)
+@@ -41,6 +42,7 @@ CYS_error_t tee_init_random(void)
+     NRF_CRYPTOCELL->ENABLE = 1;
+     cc3xx_err_t err = cc3xx_lowlevel_rng_get_random(initial_entropy, sizeof(initial_entropy),
+                                         CC3XX_RNG_CRYPTOGRAPHICALLY_SECURE);
++    tee_timing_mark();
+     if (err != CC3XX_ERR_SUCCESS) {
+         goto exit;
+     }
+@@ -53,6 +55,7 @@ CYS_error_t tee_init_random(void)
+     }
+ 
+ exit:
++    tee_timing_mark();
+     NRF_CRYPTOCELL->ENABLE = 0;
+     return tee_map_error_values(err);
+ }
+
+=== untracked src/entry/tee_timing.h
+/*
+ * Boot-time evaluation of riot-tee-bl (branch eval/boot-markers only).
+ *
+ * The stage pin toggles after every step of the start-up, so that an
+ * oscilloscope shows the duration of each step. The pin is secure until
+ * main() hands GPIO P0 to the non-secure world; from then on the secure
+ * alias no longer reaches it and the non-secure alias is used.
+ */
+#ifndef TEE_TIMING_H
+#define TEE_TIMING_H
+
+#include "nrf9160.h"
+
+#define TEE_TIMING_STAGE_PIN 10    /* the phase pin of BL1 */
+
+static inline void tee_timing_mark(void)
+{
+    if (NRF_SPU_S->GPIOPORT[0].PERM & (1u << TEE_TIMING_STAGE_PIN)) {
+        NRF_P0_S->OUT ^= 1u << TEE_TIMING_STAGE_PIN;
+    }
+    else {
+        NRF_P0_NS->OUT ^= 1u << TEE_TIMING_STAGE_PIN;
+    }
+}
+
+#endif /* TEE_TIMING_H */

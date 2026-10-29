@@ -1,0 +1,19 @@
+diff --git a/tests/sys/psa_riot_tee/main.c b/tests/sys/psa_riot_tee/main.c
+index 88999aecd4..e276825525 100644
+--- a/tests/sys/psa_riot_tee/main.c
++++ b/tests/sys/psa_riot_tee/main.c
+@@ -15,10 +15,14 @@
+  * @}
+  */
+ 
++#include "periph_cpu.h"
+ #include "test_utils.h"
+ 
+ int main(void)
+ {
++    /* Boot-time evaluation: the phase pin of BL1 (P0.10), which riot-tee
++       keeps toggling, toggles once more when RIOT reaches main(). */
++    NRF_P0->OUT ^= 1 << 10;
+     TESTS_START();
+     psa_crypto_init();
+     TESTS_RUN(tests_psa_import_and_seal_key());
